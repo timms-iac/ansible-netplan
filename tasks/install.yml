@@ -15,3 +15,13 @@
   register: result
   until: result is successful
   when: netplan_renderer == 'NetworkManager'
+
+- name: Install OpenVSwitch when used
+  apt:
+    name: openvswitch-switch
+    state: present
+  become: true
+  register: result
+  until: result is successful
+  when: netplan_configuration['network']['openvswitch'] is defined 
+

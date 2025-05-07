@@ -1,4 +1,195 @@
 ---
+- name: Configuring Netplan based on NetBox
+  block:
+  - name: Get Device information
+    ansible.builtin.set_fact:
+      nb_device: '{{ query("netbox.netbox.nb_lookup", "devices",
+        api_endpoint=ansible_nb_url,
+        api_filter="name=" ~inventory_hostname,
+        token=ansible_nb_token) }}'
+
+  - name: Show device variables
+    ansible.builtin.debug:
+      var: nb_device
+
+  - name: Get Interface information
+    ansible.builtin.set_fact:
+      nb_interfaces: '{{ query("netbox.netbox.nb_lookup", "interfaces",
+        api_endpoint=ansible_nb_url,
+        api_filter="device=" ~inventory_hostname,
+        token=ansible_nb_token) }}'
+
+  - name: Show interfaces variables
+    ansible.builtin.debug:
+      var: nb_interfaces
+
+  - name: Get IP address information
+    ansible.builtin.set_fact:
+      nb_ip_addresses: '{{ query("netbox.netbox.nb_lookup", "ip-addresses",
+        api_endpoint=ansible_nb_url,
+        token=ansible_nb_token) }}'
+
+  - name: Show ip_addresses variables
+    ansible.builtin.debug:
+      var: nb_ip_addresses
+
+  - name: Get Prefix information
+    ansible.builtin.set_fact:
+      nb_prefixes: '{{ query("netbox.netbox.nb_lookup", "prefixes",
+        api_endpoint=ansible_nb_url,
+        token=ansible_nb_token) }}'
+
+  - name: Show prefixes variables
+    ansible.builtin.debug:
+      var: nb_prefixes
+
+
+  - name: Get static route information
+    ansible.builtin.set_fact:
+      nb_static_routes: '{{ query("netbox.netbox.nb_lookup", "staticroute",
+        plugin="routing",
+        api_endpoint=ansible_nb_url,
+        token=ansible_nb_token) }}'
+
+  - name: Show static_route variables
+    ansible.builtin.debug:
+      var: nb_static_routes
+
+  - name: Write Netplan content
+    ansible.builtin.set_fact:
+      netplan: |
+        {% set output = { 'network': { 'version': nb_device[0].value.custom_fields.NetworkVersion } | default('2') } %}
+        {% if netplan_renderer is not none %}
+        {% set _ = output['network'].update({'renderer': netplan_renderer }) %} 
+        {% endif %}
+        {% set ovs = false %}
+        {% if nb_device[0].value.custom_fields.OpenVSwitchProtocols is defined and not "none" in nb_device[0].value.custom_fields.OpenVSwitchProtocols %}
+        {% set ovs = true %}
+        {% set _ = output['network'].update({'openvswitch': { 'protocols': nb_device[0].value.custom_fields.OpenVSwitchProtocols} }) %}
+        {% endif %}
+        {# Sections for interface types #}
+        {% set _ = output['network'].update({ 'bridges': {}}) %}
+        {% set _ = output['network'].update({ 'ethernets': {}}) %}
+        {% set _ = output['network'].update({ 'vlans': {}}) %}
+        {% for interface in nb_interfaces %}
+        {% if interface.value.enabled %}
+        {# Network Bridge #}
+        {% if interface.value.type.value == "bridge" %}
+        {% set _ = output['network']['bridges'].update({interface.value.name: {}}) %}
+        {% set pinterfaces = [] %}
+        {% for pinterface in nb_interfaces %}
+        {% if pinterface.value.enabled and pinterface.value.type.value != "virtual" and pinterface.value.bridge.name is defined and pinterface.value.bridge.name == interface.value.name %}
+        {% set _ = pinterfaces.append(pinterface.value.name) %}
+        {% endif %}
+        {% endfor %}
+        {% set _ = output['network']['bridges'][interface.value.name].update({'interfaces': pinterfaces}) %}
+        {% set _ = output['network']['bridges'][interface.value.name].update({'dhcp4': false}) %}
+        {% if ovs %}
+        {% set _ = output['network']['bridges'][interface.value.name].update({'openvswitch': {}}) %}
+        {% endif %}
+        {% set _ = output['network']['bridges'][interface.value.name].update({'addresses': []}) %}
+        {% set _ = output['network']['bridges'][interface.value.name].update({'routes': []}) %}
+        {# For Addr #}
+        {% for addr in nb_ip_addresses %}
+        {% if addr.value.assigned_object.device.name is defined and addr.value.assigned_object.device.name == inventory_hostname and addr.value.assigned_object.name == interface.value.name %}
+        {% set address = addr.value.address.split('/')[0] %}
+        {% for prefix in nb_prefixes %}
+        {% if prefix.value.vrf.name is defined and prefix.value.vrf.name == addr.value.vrf.name  %}
+        {% set netmask = prefix.value.prefix.split('/')[1] %}
+        {% set _ = output['network']['bridges'][interface.value.name]['addresses'].append([address, netmask] | join('/')) %}
+        {% if nb_device[0].value.primary_ip4.address is defined and nb_device[0].value.primary_ip4.address == addr.value.address %}
+        {% for route in nb_static_routes %}
+        {% if route.value.vrf.name is defined and route.value.vrf.name == prefix.value.vrf.name and route.value.prefix == prefix.value.prefix %}
+        {% set _ = output['network']['bridges'][interface.value.name]['routes'].append({'to': 'default', 'via': route.value.next_hop}) %}
+        {% endif %}
+        {% endfor %}
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+        {# End if addr #}
+        {% endif %}
+        {# End for Addr #}
+        {% endfor %}
+        {% endif %}
+        {# Ethernets #}
+        {% if interface.value.type.value in ["1000base-t", "2.5gbase-t", "sfp+"] %}
+        {% set _ = output['network']['ethernets'].update({interface.value.name: {'dhcp4': false}}) %}
+        {% if interface.value.mac_addresses %}
+        {% set _ = output['network']['ethernets'][interface.value.name].update({'match': {'macaddress': interface.value.mac_address }, 'set-name': interface.value.name }) %}
+        {% endif %}
+        {% set _ = output['network']['ethernets'][interface.value.name].update({'addresses': []}) %}
+        {# For Addr #}
+        {% for addr in nb_ip_addresses %}
+        {% if addr.value.assigned_object.device.name is defined and addr.value.assigned_object.device.name == inventory_hostname and addr.value.assigned_object.name == interface.value.name %}
+        {% set address = addr.value.address.split('/')[0] %}
+        {% for prefix in nb_prefixes %}
+        {% if prefix.value.vrf.name is defined and prefix.value.vrf.name == addr.value.vrf.name  %}
+        {% set netmask = prefix.value.prefix.split('/')[1] %}
+        {% set _ = output['network']['ethernets'][interface.value.name]['addresses'].append([address, netmask] | join('/')) %}
+        {% endif %}
+        {% endfor %}
+        {# End if addr #}
+        {% endif %}
+        {# End for Addr #}
+        {% endfor %}
+        {% endif %}
+        {# VLANS #}
+        {% if interface.value.type.value == "virtual" %}
+        {% set _ = output['network']['vlans'].update({interface.value.name: {'dhcp4': false}}) %}
+        {% if interface.value.bridge.name is defined%}
+        {% set _ = output['network']['vlans'][interface.value.name].update({"link": interface.value.bridge.name }) %}
+        {% endif %}
+        {% if interface.value.parent %}
+        {% set _ = output['network']['vlans'][interface.value.name].update({"link": interface.value.parent }) %}
+        {% endif %}
+        {% if interface.value.lag %}
+        {% set _ = output['network']['vlans'][interface.value.name].update({"link": interface.value.lag }) %}
+        {% endif %}
+        {% if ovs %}
+        {% set _ = output['network']['vlans'][interface.value.name].update({'openvswitch': {}}) %}
+        {% endif %}
+        {% if interface.value.mode.value == "access" and interface.value.untagged_vlan and interface.value.untagged_vlan.vid %}
+        {% set _ = output['network']['vlans'][interface.value.name].update({'id': interface.value.untagged_vlan.vid}) %}
+        {% endif %}
+        {% set _ = output['network']['vlans'][interface.value.name].update({'addresses': []}) %}
+        {# For Addr #}
+        {% for addr in nb_ip_addresses %}
+        {% if addr.value.assigned_object.device.name is defined and addr.value.assigned_object.device.name == inventory_hostname and addr.value.assigned_object.name == interface.value.name %}
+        {% set address = addr.value.address.split('/')[0] %}
+        {% for prefix in nb_prefixes %}
+        {% if prefix.value.vlan.vid is defined and prefix.value.vlan.vid == interface.value.untagged_vlan.vid and prefix.value.vrf.name is defined and prefix.value.vrf.name == addr.value.vrf.name  %}
+        {% set netmask = prefix.value.prefix.split('/')[1] %}
+        {% set _ = output['network']['vlans'][interface.value.name]['addresses'].append([address, netmask] | join('/')) %}
+        {% endif %}
+        {% endfor %}
+        {# End if addr #}
+        {% endif %}
+        {# End for Addr #}
+        {% endfor %}
+        {% endif %}
+        {# End interface loop/if #}
+        {% endif %}
+        {% endfor %}
+        {{ output }}
+
+  - name: Netplan
+    ansible.builtin.debug:
+      var: netplan
+
+  - name: Configuring Netplan
+    #    template:
+      #      src: etc/netplan/config_netbox.yaml.j2
+    copy:
+      content: "{{ netplan | to_nice_yaml }}"
+      dest: "/tmp/netplan_netbox.yaml"
+        #      dest: "{{ netplan_config_file }}"
+      mode: "{{ netplan_config_file_mode}}"
+      backup: true
+
+  become: true
+  when: netplan_configuration_netbox
+    #  notify: netplan generate config
+
 - name: Configuring Netplan
   template:
     src: etc/netplan/config.yaml.j2
@@ -6,7 +197,7 @@
     mode: "{{ netplan_config_file_mode}}"
     backup: true
   become: true
-  when: netplan_configuration != []
+  when: not netplan_configuration_netbox and netplan_configuration != []
   notify: netplan generate config
   
 - name: set ipv4_forward

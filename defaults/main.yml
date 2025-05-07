@@ -92,3 +92,5 @@ netplan_pri_domain: example.org
 netplan_check_install: True
 
 netplan_apply: True
+
+netplan_configuration_netbox: false

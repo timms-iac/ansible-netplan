@@ -1,0 +1,61 @@
+---
+network:
+  version: {{ nb_device[0].value.custom_fields.NetworkVersion |default('2') }}
+{% if netplan_renderer is not none %}
+  renderer: {{ netplan_renderer }}
+{% endif %}
+{% set ovs = false %}
+{% if nb_device[0].value.custom_fields.OpenVSwitchProtocols is defined and not "none" in nb_device[0].value.custom_fields.OpenVSwitchProtocols %}
+{% set ovs = true %}
+  openvswitch:
+    protocols: {{ nb_device[0].value.custom_fields.OpenVSwitchProtocols }}
+{% endif %}
+{% set ethernets = [] %}
+{% set wifis = [] %}
+{% set bonds = [] %}
+{% set bridges = {} %}
+{% set vlans = [] %}
+{% set tunnels = [] %}
+{% for interface in nb_interfaces %}
+{% if interface.value.enabled %}
+{% if interface.value.type.value == "bridge" %}
+
+{% set _ = bridges.update({interface.value.name: "test"}) %}
+
+{% set pinterfaces = [] %}
+{% for pinterface in nb_interfaces %}
+{% if pinterface.value.enabled and pinterface.value.bridge.name is defined and pinterface.value.bridge.name == interface.value.name %}
+{% set _ = pinterfaces.append(pinterface.value.name) %}
+{% endif %}
+{% endfor %}
+
+{% endif %}
+{% endif %}
+{% endfor %}
+{% if ethernets %}
+  ethernets:
+{% for line in bridges %}
+{{ line }}
+{% endfor %}
+{% endif %}
+{% if wifis %}
+  wifis:
+{% for line in bridges %}
+{{ line }}
+{% endfor %}
+{% endif %}
+{% if bonds %}
+  bonds:
+{% for line in bridges %}
+{{ line }}
+{% endfor %}
+{% endif %}
+{% if bridges %}
+  bridges: {{ bridges | to_nice_yaml}}
+{% endif %}
+{% if tunnels %}
+  tunnels:
+{% for line in bridges %}
+{{ line }}
+{% endfor %}
+{% endif %}

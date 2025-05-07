@@ -4,6 +4,10 @@ network:
 {% if netplan_renderer is not none %}
   renderer: {{ netplan_renderer }}
 {% endif %}
+{% if netplan_configuration['network']['openvswitch'] is defined %}
+  openvswitch:
+{{ netplan_configuration['network']['openvswitch']|to_nice_yaml|indent(4, true) }}
+{% endif %}
 {% if netplan_configuration['network']['ethernets'] is defined %}
   ethernets:
 {{ netplan_configuration['network']['ethernets']|to_nice_yaml|indent(4, true) }}
